@@ -1,116 +1,176 @@
-## 1. Singleton Pattern
+# Design Patterns in Java
 
-**Intent:**  
-Ensure a class has only one instance and provide a global point of access to it.
+A comprehensive collection of design patterns implemented in Java, organized according to IntelliJ IDEA and Maven standards.
 
-**How it’s implemented:**
+## Project Structure
 
--   **Private constructor:** Prevents external instantiation.
--   **Static instance:** Holds the single instance of the class.
--   **Thread-safe access:** Uses `synchronized` in the `getInstance()` method to ensure only one instance is created in a multithreaded environment.
+This project follows the standard Maven directory structure:
 
-**Examples in your code:**
+```
+src/
+├── main/
+│   └── java/
+│       └── com/
+│           └── designpatterns/
+│               ├── creational/
+│               │   ├── abstractfactory/
+│               │   ├── builder/
+│               │   ├── factory/
+│               │   ├── prototype/
+│               │   └── singleton/
+│               └── structural/
+│                   └── facade/
+```
 
--   `DatabaseSingleton`:  
-    Manages a single database connection.
-    -   The constructor is private.
-    -   The static `getInstance()` method returns the single instance.
-    -   The connection is established once and reused.
--   `CacheManager`:  
-    Manages a single cache map for the application.
-    -   Similar structure: private constructor, static instance, thread-safe `getInstance()`.
+## Design Patterns Implemented
 
-**Benefit:**  
-Prevents multiple instances (e.g., multiple DB connections or caches), ensuring resource efficiency and consistent state.
+### Creational Patterns
 
-## 2. Factory Pattern
+#### 1. Abstract Factory Pattern
 
-**Intent:**  
-Define an interface for creating an object, but let subclasses decide which class to instantiate.
+**Package:** `com.designpatterns.creational.abstractfactory`
 
-**How it’s implemented:**
+Creates families of related objects without specifying their concrete classes.
 
--   **Product interface:** Defines the contract for products (e.g., `Pizza`).
--   **Concrete products:** Implement the product interface (e.g., `MargheritaPizza`, `VeggiePizza`).
--   **Factory interface:** Declares a method for creating products (e.g., `PizzaFactory`).
--   **Concrete factories:** Implement the factory interface to instantiate specific products (e.g., `MargheritaPizzaFactory`, `VeggiePizzaFactory`).
+**Classes:**
 
-**Examples in your code:**
+-   `FurnitureFactory` - Abstract factory interface
+-   `ModernFurnitureFactory` - Concrete factory for modern furniture
+-   `VictorianFurnitureFactory` - Concrete factory for Victorian furniture
+-   `Chair` - Abstract product interface
+-   `Table` - Abstract product interface
+-   `ModernChair`, `ModernTable` - Concrete modern products
+-   `VictorianChair`, `VictorianTable` - Concrete Victorian products
+-   `Factory` - Main class demonstrating the pattern
 
--   `Pizza`:  
-    The product interface with methods like `prepare()`, `bake()`, `pack()`.
--   `MargheritaPizza`, `VeggiePizza`:  
-    Concrete pizza types.
--   `PizzaFactory`:  
-    The factory interface.
--   `MargheritaPizzaFactory`, `VeggiePizzaFactory`:  
-    Factories that create specific pizza types.
--   `PizzaStore`:  
-    Demonstrates usage by creating pizzas via factories.
+#### 2. Builder Pattern
 
-**Benefit:**  
-Encapsulates object creation, making it easy to add new types without changing client code.
+**Package:** `com.designpatterns.creational.builder`
 
-## 3. Abstract Factory Pattern
+Constructs complex objects step by step.
 
-**Intent:**  
-Provide an interface for creating families of related or dependent objects without specifying their concrete classes.
+**Classes:**
 
-**How it’s implemented:**
+-   `Pizza` - Product class with inner Builder
+-   `Builder` - Main class demonstrating the pattern
 
--   **Abstract factory interface:** Declares methods for creating abstract products (e.g., `FurnitureFactory` with `createChair()` and `createTable()`).
--   **Abstract product interfaces:** Define contracts for products (e.g., `Chair`, `Table`).
--   **Concrete factories:** Implement the abstract factory to create related products (e.g., `ModernFurnitureFactory`, `VictorianFurnitureFactory`).
--   **Concrete products:** Implement the product interfaces (e.g., `ModernChair`, `VictorianChair`, `ModernTable`, `VictorianTable`).
+#### 3. Factory Pattern
 
-**Examples in your code:**
+**Package:** `com.designpatterns.creational.factory`
 
--   `FurnitureFactory`:  
-    Abstract factory interface.
--   `Chair`, `Table`:  
-    Abstract product interfaces.
--   `ModernFurnitureFactory`, `VictorianFurnitureFactory`:  
-    Concrete factories.
--   `ModernChair`, `VictorianChair`, etc.:  
-    Concrete products.
--   `Factory`:  
-    Demonstrates creating families of related products.
+Creates objects without specifying their exact classes.
 
-**Benefit:**  
-Ensures products created by a factory are compatible, and makes it easy to switch between product families.
+**Classes:**
 
-## 4. Facade Pattern
+-   `PizzaFactory` - Abstract factory interface
+-   `MargheritaPizzaFactory` - Concrete factory for Margherita pizza
+-   `VeggiePizzaFactory` - Concrete factory for veggie pizza
+-   `Pizza` - Abstract product interface
+-   `MargheritaPizza`, `VeggiePizza` - Concrete products
+-   `PizzaStore` - Main class demonstrating the pattern
 
-**Intent:**  
-Provide a unified interface to a set of interfaces in a subsystem, making the subsystem easier to use.
+#### 4. Prototype Pattern
 
-**How it’s implemented:**
+**Package:** `com.designpatterns.creational.prototype`
 
--   **Facade class:** Offers simplified methods that internally coordinate calls to subsystem classes (e.g., `Restraunt`).
--   **Subsystem classes:** Handle the actual work (e.g., `OrderService`, `KitchenService`).
--   **Domain objects:** Represent data (e.g., `Order`).
+Creates new objects by cloning an existing object.
 
-**Examples in your code:**
+**Classes:**
 
--   `Restraunt`:  
-    The facade class. Methods like `placeOrder()` and `completeOrder()` coordinate the order and kitchen services.
--   `OrderService`:  
-    Handles order creation.
--   `KitchenService`:  
-    Handles order preparation and serving.
--   `Order`:  
-    Represents an order.
+-   `Character` - Prototype interface
+-   `Orc` - Concrete prototype implementation
 
-**Benefit:**  
-Simplifies complex subsystems, reduces coupling, and provides a clear API for clients.
+#### 5. Singleton Pattern
 
-## Summary Table
+**Package:** `com.designpatterns.creational.singleton`
 
-| Pattern          | Intent                                                         | Example Classes/Files               |
-| ---------------- | -------------------------------------------------------------- | ----------------------------------- |
-| Singleton        | Single instance, global access                                 | `DatabaseSingleton`, `CacheManager` |
-| Factory          | Interface for object creation, subclass decides implementation | `PizzaStore`, `PizzaFactory`        |
-| Abstract Factory | Interface for families of related objects                      | `FurnitureFactory`, `Factory`       |
-| Facade           | Unified interface to subsystem                                 | `Restraunt`, `OrderService`         |
+Ensures a class has only one instance and provides global access to it.
 
----
+**Classes:**
+
+-   `CacheManager` - Thread-safe singleton with synchronized method
+-   `DatabaseSingleton` - Singleton for database connection management
+
+### Structural Patterns
+
+#### 1. Facade Pattern
+
+**Package:** `com.designpatterns.structural.facade`
+
+Provides a simplified interface to a complex subsystem.
+
+**Classes:**
+
+-   `Restraunt` - Facade class
+-   `Order` - Data class for orders
+-   `OrderService` - Subsystem class for order management
+-   `KitchenService` - Subsystem class for kitchen operations
+
+## Getting Started
+
+### Prerequisites
+
+-   Java 11 or higher
+-   Maven 3.6 or higher
+-   IntelliJ IDEA (recommended)
+
+### Setup
+
+1. Clone the repository
+2. Open the project in IntelliJ IDEA
+3. Import as Maven project
+4. Build the project using Maven: `mvn clean compile`
+
+### Running Examples
+
+Each pattern includes a main class that demonstrates its usage. You can run these directly from IntelliJ IDEA or using Maven:
+
+```bash
+# Run Abstract Factory example
+mvn exec:java -Dexec.mainClass="com.designpatterns.creational.abstractfactory.Factory"
+
+# Run Builder example
+mvn exec:java -Dexec.mainClass="com.designpatterns.creational.builder.Builder"
+
+# Run Factory example
+mvn exec:java -Dexec.mainClass="com.designpatterns.creational.factory.PizzaStore"
+```
+
+## Project Configuration
+
+### Maven Configuration
+
+The project uses Maven for dependency management and build configuration. Key dependencies:
+
+-   MySQL Connector (for DatabaseSingleton example)
+
+### IntelliJ IDEA Configuration
+
+-   Source folders are properly configured in `pom.xml`
+-   Package structure follows Java conventions
+-   All classes have proper package declarations
+
+## Contributing
+
+When adding new patterns:
+
+1. Follow the existing package structure
+2. Use appropriate package names (e.g., `com.designpatterns.behavioral.command` for behavioral patterns)
+3. Include a main class demonstrating the pattern
+4. Update this README with pattern descriptions
+
+## Design Pattern Categories
+
+This project organizes patterns into three main categories:
+
+1. **Creational Patterns** - Deal with object creation mechanisms
+2. **Structural Patterns** - Deal with object composition and relationships
+3. **Behavioral Patterns** - Deal with communication between objects (to be added)
+
+## Best Practices
+
+-   Each pattern is implemented in its own package
+-   All classes have proper package declarations
+-   Examples include practical use cases
+-   Code follows Java naming conventions
+-   Thread safety is considered where applicable

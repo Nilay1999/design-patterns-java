@@ -16,9 +16,9 @@ The JMM defines an abstract memory architecture:
 ```
 ┌─────────────────────────────────────────────────────┐
 │                    Main Memory (Heap)               │
-│   ┌────────────┐  ┌────────────┐  ┌────────────┐   │
-│   │  Object A  │  │  Object B  │  │  int x=5   │   │
-│   └────────────┘  └────────────┘  └────────────┘   │
+│   ┌────────────┐  ┌────────────┐  ┌────────────┐    │
+│   │  Object A  │  │  Object B  │  │  int x=5   │    │
+│   └────────────┘  └────────────┘  └────────────┘    │
 └─────────────────────────────────────────────────────┘
          ▲                  ▲
          │                  │
@@ -27,7 +27,7 @@ The JMM defines an abstract memory architecture:
 │  Working Mem   │  │  Working Mem   │
 │  (CPU cache /  │  │  (CPU cache /  │
 │   registers)   │  │   registers)   │
-│  x = 5 (copy) │  │  x = 5 (copy) │
+│  x = 5 (copy)  │  │  x = 5 (copy)  │
 └────────────────┘  └────────────────┘
 ```
 

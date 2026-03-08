@@ -7,136 +7,172 @@
 
 ### 1.1 What Is Concurrency?
 
-**Concurrency** is the ability of a system to deal with multiple tasks at the same time. It does not necessarily mean they execute simultaneously — it means the system makes *progress on multiple things* within an overlapping time window.
+**Concurrency** is the ability of a program to deal with multiple tasks that overlap in time. The word "deal with" is intentional — concurrency does not require both tasks to be physically running at the same instant. It only requires that the system makes *progress on both* within an overlapping time window.
 
-Think of a chef cooking multiple dishes. While the pasta boils (waiting), the chef chops vegetables (executing). Two tasks overlap in time — that is concurrency.
+Think of a chef cooking multiple dishes. The pasta is on the stove boiling (waiting, no CPU needed). While it boils, the chef chops vegetables (executing). When the timer rings, the chef stirs the pasta and goes back to chopping. Both tasks are in progress simultaneously even though only one has the chef's attention at any given moment.
 
 ```
 Timeline:
-Task A: [====running====][--waiting--][==running==]
-Task B:            [=running=][--waiting--][=========running=========]
+Task A: [====running====][--waiting--][==running==][--waiting--][=running=]
+Task B:            [=running=][----waiting----][=========running=========]
 ```
 
-### 1.2 Concurrency vs Parallelism vs Multithreading
+This interleaving is the essence of concurrency. The OS switches between tasks fast enough that they appear to progress together.
 
-| Concept | Definition | Requires multiple CPUs? | Example |
-|---|---|---|---|
-| **Concurrency** | Multiple tasks in progress simultaneously (interleaved) | No | Single-core OS switching tasks |
-| **Parallelism** | Multiple tasks executing at the *exact same instant* | Yes | 4 CPU cores each running a thread |
-| **Multithreading** | Using multiple threads within a single process | No (but helps) | Java web server with thread-per-request |
+**Concurrency vs Parallelism** are often confused but they describe different things:
 
-**Key insight:** Parallelism is a subset of concurrency. All parallel execution is concurrent, but not all concurrent execution is parallel.
+- **Concurrency** is a *design property* of a system — it is structured to handle multiple things at once. It says nothing about whether they run simultaneously.
+- **Parallelism** is a *runtime property* — multiple computations are literally executing at the same physical instant on multiple cores.
+
+Parallelism requires multiple CPUs. Concurrency does not. A single-core system can be highly concurrent (many tasks interleaved) but never parallel.
 
 ```
-Concurrency on 1 core (interleaving):
+Concurrency on 1 core (interleaving, NOT simultaneous):
 Core 0: [--A--][--B--][--A--][--B--][--A--]
 
-Parallelism on 2 cores (truly simultaneous):
+Parallelism on 2 cores (physically simultaneous):
 Core 0: [--A--][--A--][--A--]
 Core 1: [--B--][--B--][--B--]
 ```
 
-### 1.3 Why Concurrency Matters in Modern Systems
+**Multithreading** is Java's mechanism for achieving concurrency (and potentially parallelism on multi-core hardware). A thread is an independently-scheduled unit of execution within a process. When you create two threads, the OS can run them on separate cores (parallelism) or time-slice them on one core (concurrency without parallelism).
 
-Modern hardware has multiple CPU cores that sit idle if only one thread runs. Applications that ignore concurrency leave performance on the table. More importantly:
+The key insight: **parallelism is a subset of concurrency**. All parallel programs are concurrent. Not all concurrent programs are parallel.
 
-- **Web servers** handle thousands of simultaneous HTTP requests
-- **Database connection pools** serve multiple queries in parallel
-- **Streaming pipelines** read, transform, and write data concurrently
-- **Event processors** handle multiple event streams simultaneously
-- **Background jobs** run without blocking the main request thread
+### 1.2 Why Concurrency Is Hard
 
-### 1.4 Real-World Production Examples
+Concurrency is not inherently difficult — the difficulty comes from **shared mutable state**. When multiple tasks can read and write the same data, the order of operations matters. And since threads are scheduled by the OS non-deterministically, you cannot predict that order.
 
-**Web Server (Tomcat/Jetty):**
-Each incoming HTTP request is handled by a dedicated thread from a pool. Without concurrency, requests would queue and users would wait for each other.
+This non-determinism makes bugs:
+- Hard to reproduce (the bug only appears when threads interleave in a specific unfortunate way)
+- Hard to debug (the act of attaching a debugger changes thread scheduling)
+- Hard to test (tests may pass 999 times and fail the 1000th)
+
+The rest of this document is really about answering one question: *how do we write programs where shared state is accessed safely despite unpredictable scheduling?*
+
+### 1.3 Why Concurrency Matters in Production Systems
+
+Modern hardware has 8, 16, 32 CPU cores. A single-threaded program uses one core and leaves the rest idle. For CPU-bound work, concurrency is a multiplier on throughput. But even for I/O-bound work (which is most backend work), concurrency is critical because threads can do useful work while others wait on disk, network, or database.
+
+Real examples:
+
+**Web Server (Tomcat/Jetty):** Each HTTP request is assigned to a thread from a pool. Without concurrency, Request 2 must wait for Request 1 to complete — including its database query time. With a thread pool, Request 1's thread blocks on its DB query, and the scheduler gives the CPU to Request 2's thread.
 
 ```
-Request 1 ──► Thread-1 ──► Handler ──► DB Query ──► Response
-Request 2 ──► Thread-2 ──► Handler ──► DB Query ──► Response
-Request 3 ──► Thread-3 ──► Handler ──► DB Query ──► Response
+Without concurrency:           With concurrency (thread pool):
+Req 1: [====DB====][response]  Thread-1: [====DB====][response]
+Req 2: ........[====DB====]    Thread-2: [====DB====][response]   ← runs in parallel
+                                         ↑ starts at same time
 ```
 
-**Database Connection Pool (HikariCP):**
-A fixed set of database connections is shared among many threads. Concurrency control ensures no two threads use the same connection simultaneously.
+**Database Connection Pool (HikariCP):** A fixed pool of 10 connections is shared among 200 threads. Concurrency control ensures no two threads use the same connection simultaneously. Without it, two threads sending queries on the same connection would corrupt both responses.
 
-**Event Processing (Kafka Consumer):**
-Multiple consumer threads each read from different partitions, processing events in parallel, achieving horizontal throughput scaling.
-
-**Streaming Pipeline (Apache Spark/Flink):**
-Data flows through stages (read → filter → aggregate → write), with each stage potentially running on separate threads or processes.
+**Kafka Consumer:** A consumer group has N consumers, each reading from a separate partition. Each consumer is a thread. They read and process events in parallel, achieving N× throughput vs a single consumer.
 
 ---
 
 ## 2. Java Thread Fundamentals
 
-### 2.1 Process vs Thread
+### 2.1 What Is a Thread?
 
-| Aspect | Process | Thread |
-|---|---|---|
-| Memory | Separate address space | Shared heap within process |
-| Creation cost | High (fork/exec) | Low (just a stack + registers) |
-| Communication | IPC (pipes, sockets, shared memory) | Direct shared memory access |
-| Crash isolation | Yes — one process crash doesn't kill others | No — one thread crash can kill the JVM |
-| Context switch cost | High | Lower |
+A **process** is an isolated instance of a running program. The OS gives each process its own address space — its own heap, its own code segment, its own file descriptor table. Processes are isolated from each other by design. One process crashing does not crash another.
 
-A JVM itself is a process. Every Java application runs at least one thread: the `main` thread. The JVM also runs background threads: GC thread, JIT compiler thread, finalizer thread, etc.
+A **thread** is a unit of execution *within* a process. All threads in a process share the same heap, the same static variables, and the same open file handles. Each thread has its own:
+- **Stack** — local variables, method call frames
+- **Program counter** — which instruction to execute next
+- **Register state** — CPU register values at the current point of execution
+
+This sharing is what makes threads efficient (no IPC needed) and dangerous (uncoordinated access to shared state causes bugs).
+
+```
+JVM Process
+├── Heap (shared by ALL threads)
+│   ├── Object instances
+│   └── Static fields
+│
+├── Thread-1
+│   ├── Stack (private)
+│   └── Program Counter (private)
+│
+├── Thread-2
+│   ├── Stack (private)
+│   └── Program Counter (private)
+│
+└── Thread-3 (GC thread, JVM internal)
+    ├── Stack (private)
+    └── Program Counter (private)
+```
+
+When you write `int x = 5;` inside a method, `x` lives on the stack — private to that thread. When you write `this.count++`, `count` is a field on a heap-allocated object — visible to every thread that holds a reference to that object.
 
 ### 2.2 Thread Lifecycle
 
+A Java thread moves through well-defined states defined in `java.lang.Thread.State`:
+
 ```
-               start()
-NEW ──────────────────────► RUNNABLE ◄──────────────────┐
-                                │                        │
-                    scheduler   │   wait()/sleep()/IO    │
-                    dispatches  ▼   blocks               │
-                           RUNNING ──────────────► BLOCKED/WAITING/TIMED_WAITING
-                                │                        │
-                    run()       │   notify()/interrupt() │
-                    completes   ▼   /timeout             │
-                          TERMINATED   ◄─────────────────┘
-                                           (only if run() ends)
+         new Thread(r)
+NEW ──────────────────────► RUNNABLE
+                                │  ▲
+               OS dispatches    │  │  OS preempts (timeslice expires)
+                                ▼  │
+                            RUNNING
+                           /       \
+           wait()/join()  /         \  synchronized block
+           sleep(n)      /           \  (lock not available)
+                        ▼             ▼
+              WAITING/TIMED_WAITING  BLOCKED
+                        │
+              notify()/interrupt()/timeout
+                        │
+                        └──────────────► RUNNABLE
+                                              │
+                                    run() returns or throws
+                                              │
+                                         TERMINATED
 ```
 
-**Thread States (java.lang.Thread.State):**
+Understanding each state matters for debugging:
 
-| State | Description |
-|---|---|
-| `NEW` | Thread created but `start()` not called yet |
-| `RUNNABLE` | Ready to run or currently running on CPU |
-| `BLOCKED` | Waiting to acquire a monitor lock (synchronized) |
-| `WAITING` | Indefinitely waiting — `wait()`, `join()`, `park()` |
-| `TIMED_WAITING` | Waiting with timeout — `sleep(n)`, `wait(n)`, `join(n)` |
-| `TERMINATED` | `run()` method has returned or threw an uncaught exception |
+| State | What it means | How to get out |
+|---|---|---|
+| `NEW` | Thread object created, `start()` not called | Call `start()` |
+| `RUNNABLE` | Eligible to run; may or may not be on CPU right now | OS schedules it → RUNNING |
+| `BLOCKED` | Waiting to enter a `synchronized` block; another thread holds the lock | Lock holder exits synchronized block |
+| `WAITING` | Indefinitely waiting — called `wait()`, `join()` with no timeout, or `LockSupport.park()` | Another thread calls `notify()` / `notifyAll()`, or the joined thread terminates |
+| `TIMED_WAITING` | Waiting with a deadline — called `sleep(n)`, `wait(n)`, `join(n)` | Timeout expires, or woken early |
+| `TERMINATED` | `run()` returned or threw an uncaught exception | Cannot restart; create a new Thread |
+
+`BLOCKED` and `WAITING` are often confused. `BLOCKED` specifically means waiting to acquire a **monitor lock** from `synchronized`. `WAITING` means the thread voluntarily gave up the CPU with `wait()` or `join()` — it is not trying to acquire a lock; it is waiting for a signal.
+
+When you read a thread dump (e.g., from `jstack` or a profiler), these states tell you exactly what every thread is doing. A pile of `BLOCKED` threads means lock contention. A pile of `WAITING` threads usually means threads are parked in a thread pool waiting for work.
 
 ### 2.3 Creating Threads
 
-#### Method 1: Extending Thread
+#### Method 1: Extending `Thread`
 
 ```java
 public class DownloadTask extends Thread {
     private final String url;
 
     public DownloadTask(String url) {
-        super("downloader-" + url); // named threads help debugging
+        super("downloader-" + url); // name the thread — it shows in thread dumps
         this.url = url;
     }
 
     @Override
     public void run() {
         System.out.println(Thread.currentThread().getName() + " downloading " + url);
-        // ... actual download logic
+        // actual download logic
     }
 }
 
-// Usage
 DownloadTask task = new DownloadTask("https://example.com/file.zip");
-task.start(); // do NOT call run() directly — that executes on the current thread!
+task.start(); // creates a new OS thread and calls run() on it
 ```
 
-**Pitfall:** Calling `task.run()` instead of `task.start()` executes the code on the *calling* thread, not a new thread. Always call `start()`.
+**Critical mistake:** Calling `task.run()` instead of `task.start()` does NOT create a new thread. It calls `run()` on the *calling thread*, blocking it until `run()` completes. Always call `start()`.
 
-#### Method 2: Implementing Runnable (Preferred)
+#### Method 2: Implementing `Runnable` (Preferred)
 
 ```java
 public class LogProcessor implements Runnable {
@@ -148,31 +184,27 @@ public class LogProcessor implements Runnable {
 
     @Override
     public void run() {
-        // process the log entry
         System.out.println("Processing: " + logEntry);
     }
 }
 
-// Usage — with explicit Thread
 Thread t = new Thread(new LogProcessor("ERROR: NullPointerException"));
 t.start();
 
-// Usage — with lambda (since Runnable is a functional interface)
+// Or with a lambda — Runnable is a functional interface
 Thread t2 = new Thread(() -> System.out.println("Processing log entry"));
 t2.start();
 ```
 
-**Why prefer Runnable over Thread extension?**
-- Java only allows single inheritance. Extending `Thread` prevents extending other classes.
-- Runnable separates the *task* from the *execution mechanism* — you can reuse the same Runnable with thread pools.
+**Why prefer `Runnable` over extending `Thread`?**
 
-#### Method 3: Callable and Future
+Java allows only single inheritance. If your class extends `Thread`, it cannot extend anything else. More importantly, extending `Thread` couples the *task definition* (what to run) with the *execution mechanism* (how it runs — on which thread, from which pool). By implementing `Runnable`, the task is decoupled. You can submit the same `Runnable` to a thread pool, a `ScheduledExecutorService`, or a `ForkJoinPool` without changing the task at all.
 
-`Runnable.run()` returns void and cannot throw checked exceptions. `Callable<V>` solves both problems:
+#### Method 3: `Callable` and `Future`
+
+`Runnable.run()` has two limitations: it returns `void` and cannot throw checked exceptions. `Callable<V>` removes both constraints:
 
 ```java
-import java.util.concurrent.*;
-
 public class PriceCalculator implements Callable<Double> {
     private final String productId;
 
@@ -182,88 +214,166 @@ public class PriceCalculator implements Callable<Double> {
 
     @Override
     public Double call() throws Exception {
-        // simulate calling a pricing service
+        // simulate calling a pricing microservice
         Thread.sleep(100);
         return 42.99;
     }
 }
 
-// Usage
 ExecutorService executor = Executors.newSingleThreadExecutor();
 Future<Double> future = executor.submit(new PriceCalculator("SKU-123"));
 
-// Do other work here while price is being calculated...
+// The main thread can do other work here — the calculation is running concurrently
+System.out.println("Doing other work while price calculates...");
 
-Double price = future.get(); // blocks until result is ready
+Double price = future.get(); // blocks until the Callable completes and returns its result
 System.out.println("Price: " + price);
 executor.shutdown();
 ```
 
-### 2.4 Thread Properties
+`Future<V>` represents the *eventual result* of an asynchronous computation. `future.get()` either returns the result or throws:
+- `InterruptedException` — the waiting thread was interrupted
+- `ExecutionException` — the `Callable` itself threw an exception (wrapped here)
+- `TimeoutException` — from `future.get(timeout, unit)` overload
+
+### 2.4 Thread Control
+
+**Joining a thread** means waiting for it to finish:
+
+```java
+Thread t = new Thread(() -> heavyComputation());
+t.start();
+
+// Do some other work on the main thread...
+doOtherWork();
+
+t.join(); // blocks the main thread until t finishes
+System.out.println("t is done, result is ready");
+```
+
+`join()` uses the `WAITING` state. The calling thread waits until the target thread reaches `TERMINATED`. This establishes a happens-before relationship: everything the target thread did is visible to the calling thread after `join()` returns.
+
+**Interrupting a thread** is Java's cooperative cancellation mechanism:
+
+```java
+Thread worker = new Thread(() -> {
+    while (!Thread.currentThread().isInterrupted()) {
+        doWork();
+    }
+    System.out.println("Interrupted, shutting down cleanly");
+});
+
+worker.start();
+Thread.sleep(2000);
+worker.interrupt(); // sets the interruption flag on 'worker'
+```
+
+`interrupt()` does not forcibly kill a thread. It sets a boolean flag in the thread. The thread must periodically check `isInterrupted()` and handle it. If the thread is currently in `wait()`, `sleep()`, or `join()`, the JVM throws `InterruptedException` in that thread, clearing the flag in the process.
+
+**Good practice when catching `InterruptedException`:**
+
+```java
+// WRONG — swallowing the interrupt loses the cancellation signal
+try {
+    Thread.sleep(1000);
+} catch (InterruptedException e) {
+    // do nothing — the thread will not know it was interrupted
+}
+
+// CORRECT — restore the interrupt flag so callers can observe it
+try {
+    Thread.sleep(1000);
+} catch (InterruptedException e) {
+    Thread.currentThread().interrupt(); // re-set the flag
+    return; // or throw, or clean up
+}
+```
+
+**Thread properties:**
 
 ```java
 Thread t = new Thread(() -> {});
 
-// Name — appears in thread dumps; always name your threads!
+// Name your threads — they appear in thread dumps and logs
 t.setName("payment-processor-1");
 
-// Priority — hint to the OS scheduler (1=MIN, 5=NORM, 10=MAX)
-// Do NOT rely on priority for correctness; only for performance hints
-t.setPriority(Thread.NORM_PRIORITY);
+// Daemon threads: the JVM shuts down when only daemon threads remain
+// Use for background housekeeping tasks that should not prevent JVM exit
+t.setDaemon(true); // must be set before start()
 
-// Daemon thread — JVM exits when only daemon threads remain
-// Use for background housekeeping tasks (logging, monitoring)
-t.setDaemon(true);
-
-// Uncaught exception handler — global safety net
+// Uncaught exception handler — catches exceptions that escape run()
 t.setUncaughtExceptionHandler((thread, throwable) -> {
-    System.err.println(thread.getName() + " died: " + throwable.getMessage());
-    // log to monitoring system
+    log.error("Thread {} died unexpectedly", thread.getName(), throwable);
+    alertMonitoringSystem(throwable);
 });
 ```
 
 ### 2.5 Thread Scheduling and Context Switching
 
-The JVM delegates thread scheduling to the OS. The OS uses a preemptive scheduler — it can suspend a running thread at any moment and give the CPU to another thread. This is called a **context switch**.
+The JVM does not schedule threads — the OS does. The OS uses a **preemptive scheduler**: it can suspend any running thread at any moment and give the CPU to another thread. This suspension is called a **context switch**.
 
-**What happens during a context switch:**
-1. The OS saves the current thread's registers, program counter, and stack pointer
-2. The OS loads the next thread's saved state
-3. Execution continues where the next thread left off
+During a context switch:
+1. The OS saves the current thread's register state, program counter, and stack pointer into the thread's **Thread Control Block (TCB)**
+2. The OS selects the next thread to run (based on priority, fairness policy, I/O readiness)
+3. The OS loads the saved state from the new thread's TCB into CPU registers
+4. Execution resumes where the new thread left off
 
-**Cost of context switching:**
-- Typically 1–10 microseconds
-- Cache invalidation: the CPU L1/L2 cache may not contain data for the new thread
-- TLB misses: the memory translation lookaside buffer must be repopulated
+A context switch costs roughly **1–10 microseconds**. The hidden cost is even larger: the new thread's data likely isn't in the CPU's L1/L2 cache, causing **cache misses** that stall the CPU waiting for main memory fetches.
 
-**Practical implication:** Creating thousands of threads is wasteful. Thread pools amortize creation cost and limit context switching overhead.
+This has a practical consequence: **creating thousands of threads is wasteful**. If you have 10,000 threads and 8 cores, the OS is doing 10,000 context switches to simulate 10,000 concurrent things. The overhead dominates. Thread pools solve this by reusing a small fixed set of threads for many tasks.
+
+**Thread priority** (`Thread.MIN_PRIORITY=1` through `Thread.MAX_PRIORITY=10`) is a hint to the OS scheduler. On Linux, it maps to `nice` values. On Windows, it maps to Windows thread priorities. But it is only a hint — do not write code whose correctness depends on priority. Use it only for performance tuning.
 
 ---
 
 ## 3. Thread Safety
 
-### 3.1 What Is Thread Safety?
+### 3.1 What Thread Safety Means
 
-A class is **thread-safe** if it behaves correctly when accessed from multiple threads simultaneously, regardless of scheduling or interleaving, without requiring additional synchronization from the caller.
+A class is **thread-safe** if it behaves correctly when accessed from multiple threads simultaneously, with no additional synchronization required from the caller. "Correctly" means: it maintains its invariants and produces the expected result regardless of how threads are interleaved by the scheduler.
 
-"Correctly" means: it maintains its invariants and produces the correct result regardless of when threads are scheduled.
+Thread safety is hard to define precisely because it requires specifying what "correct" means for a given class. For a counter, correct means the count equals the exact number of `increment()` calls. For a bank account, correct means the balance equals initial + deposits - withdrawals.
+
+The challenge: correctness must hold for *all possible interleavings*, not just the common ones. If a class works correctly 99.9% of the time but fails 0.1% of the time under unusual scheduling, it is not thread-safe.
 
 ### 3.2 Race Conditions
 
-A **race condition** occurs when the correctness of a computation depends on the relative timing or interleaving of multiple threads. The outcome "races" against thread scheduling.
+A **race condition** occurs when the program's correctness depends on the relative timing of operations across threads. The program "races" against the scheduler — sometimes it wins (threads interleave safely), sometimes it loses (they interleave in a way that corrupts state).
 
-**Classic example: Non-atomic increment**
+**Type 1: Read-Modify-Write**
+
+The classic example is `count++`. This looks like one operation but is actually three:
+
+```
+1. READ:  load count from memory into CPU register
+2. MODIFY: add 1 to the register value
+3. WRITE: store the register value back to memory
+```
+
+If two threads execute these three steps concurrently, the scheduler can interleave them:
+
+```
+Thread A                        Thread B
+READ  count → 0
+                                READ  count → 0   ← reads stale value
+MODIFY 0+1 = 1
+                                MODIFY 0+1 = 1
+WRITE count = 1
+                                WRITE count = 1   ← overwrites Thread A's result
+
+Expected: count = 2
+Actual:   count = 1
+```
+
+Thread A's increment is permanently lost. This is called a **lost update**. With 1000 threads each calling `increment()` 1000 times, you expect `1,000,000` but may get `997,412` or `501,882` — it varies every run.
 
 ```java
-// THREAD UNSAFE — do NOT use in production
+// UNSAFE — do not use this in production
 public class UnsafeCounter {
     private int count = 0;
 
     public void increment() {
-        count++; // THIS IS NOT ATOMIC — it is 3 operations:
-                 // 1. READ count from memory into register
-                 // 2. ADD 1 to register
-                 // 3. WRITE register back to memory
+        count++; // not atomic: read, add, write
     }
 
     public int getCount() {
@@ -272,64 +382,76 @@ public class UnsafeCounter {
 }
 ```
 
-**What can go wrong with two threads:**
+**Type 2: Check-Then-Act**
 
+```java
+// UNSAFE — classic lazy initialization race
+public class Cache {
+    private ExpensiveObject instance = null;
+
+    public ExpensiveObject getInstance() {
+        if (instance == null) {         // Thread A checks: null → true
+                                        // Thread B checks: null → true (before A writes)
+            instance = new ExpensiveObject(); // Both threads create an instance!
+        }
+        return instance;
+    }
+}
 ```
-Thread A                        Thread B
-READ  count → 0
-                                READ  count → 0
-ADD   1 → 1
-                                ADD   1 → 1
-WRITE count = 1
-                                WRITE count = 1     ← Thread A's increment is LOST
 
-Expected result: count = 2
-Actual result:   count = 1
-```
+Thread A checks `instance == null`, sees true. Before A creates the object, Thread B runs the check — also sees null. Both threads create `ExpensiveObject`. One overwrites the other. Callers may hold references to two different instances when they expected one.
 
-This is a **lost update** race condition. With 1000 threads each calling `increment()` 1000 times, you expect 1,000,000 but may get wildly different results every run.
+Both types share the same structure: a thread reads state, assumes that state is still valid, then acts on that assumption — but another thread changes the state between the read and the act.
 
-### 3.3 Critical Section
+### 3.3 The Critical Section
 
-A **critical section** is a block of code that accesses shared mutable state and must not be executed by more than one thread simultaneously.
+A **critical section** is code that accesses shared mutable state and must execute atomically with respect to other threads. "Atomically" here means: from the perspective of other threads, either none of the critical section has happened or all of it has happened — never a partial result.
 
-In the counter example, the entire `count++` operation is a critical section. Only one thread should execute it at a time.
+For `count++`, the critical section is the entire read-modify-write sequence. For the `getInstance()` check, the critical section is the check-and-create sequence. The fix is always the same: make the critical section execute under a mutual exclusion guarantee.
 
 ### 3.4 Shared Mutable State
 
-The three dangerous words in concurrency: **shared**, **mutable**, **state**.
+The root cause of almost every concurrency bug is **shared mutable state**: state that is both shared between threads and mutable. Remove either property and the problem disappears:
 
-- **Shared:** multiple threads can access it
-- **Mutable:** it can be changed
-- **State:** it persists across calls
+**Make it not shared: Thread-Local State**
 
-If any one of these three is removed, the problem goes away:
-- Not shared (thread-local state) → safe
-- Not mutable (immutable objects) → safe
-- Not state (stateless computation) → safe
-
-### 3.5 Immutability as a Concurrency Strategy
-
-Immutable objects are inherently thread-safe — their state cannot change after construction, so no synchronization is needed.
+`ThreadLocal<T>` gives each thread its own independent copy of a variable:
 
 ```java
-// IMMUTABLE — thread safe by design
+// Each thread gets its own SimpleDateFormat — no sharing, no contention
+private static final ThreadLocal<SimpleDateFormat> dateFormat =
+    ThreadLocal.withInitial(() -> new SimpleDateFormat("yyyy-MM-dd"));
+
+public String formatDate(Date date) {
+    return dateFormat.get().format(date); // thread-safe: using our own copy
+}
+```
+
+`SimpleDateFormat` is not thread-safe. Rather than synchronizing every access, `ThreadLocal` gives each thread its own instance. No sharing → no race condition.
+
+**Make it not mutable: Immutable Objects**
+
+An immutable object cannot change state after construction. Any number of threads can read it simultaneously without coordination:
+
+```java
+// IMMUTABLE — thread-safe by design, zero synchronization needed
 public final class Money {
     private final long amountInCents;
     private final String currency;
 
     public Money(long amountInCents, String currency) {
+        if (amountInCents < 0) throw new IllegalArgumentException("negative amount");
         this.amountInCents = amountInCents;
-        this.currency = currency;
+        this.currency = Objects.requireNonNull(currency);
     }
 
-    // No setters — state cannot change
+    // No setters — state is frozen after construction
 
     public Money add(Money other) {
-        if (!this.currency.equals(other.currency)) {
+        if (!this.currency.equals(other.currency))
             throw new IllegalArgumentException("Currency mismatch");
-        }
-        return new Money(this.amountInCents + other.amountInCents, this.currency); // returns NEW object
+        return new Money(this.amountInCents + other.amountInCents, this.currency);
+        // Returns a NEW object — this object is unchanged
     }
 
     public long getAmountInCents() { return amountInCents; }
@@ -337,29 +459,29 @@ public final class Money {
 }
 ```
 
-Rules for immutability:
-1. `final` class (prevents subclass from adding mutable state)
-2. All fields `final` and `private`
-3. No setters
-4. If fields reference mutable objects, return defensive copies
-5. Initialize fully in constructor
+Rules for a properly immutable class:
+1. Declare the class `final` — prevents subclasses from adding mutable state
+2. All fields must be `final` and `private`
+3. No setter methods
+4. If any field is a reference to a mutable object, return a defensive copy from getters
+5. Complete all initialization in the constructor
 
-### 3.6 Stateless Objects Are Always Thread-Safe
+**Make it not state: Stateless Objects**
+
+If a class has no instance fields, it has no state to protect:
 
 ```java
-// STATELESS — thread safe
+// STATELESS — thread-safe, no synchronization needed
 public class TaxCalculator {
-    // no instance fields
+    // no fields
 
     public double calculate(double price, double taxRate) {
-        return price * taxRate; // operates only on method parameters
+        return price * taxRate; // operates only on method parameters (on the stack)
     }
 }
-
-// Any number of threads can call calculate() simultaneously — safe!
 ```
 
-REST controllers in Spring are singletons but safe *only* because they're (should be) stateless. If you add mutable fields to a Spring `@Service` or `@Controller`, you break thread safety.
+Spring `@Service`, `@Repository`, and `@Controller` beans are singletons shared across all request threads. They are safe *only because* they should be stateless. If you add a mutable instance field to a Spring service, you break thread safety for all users of that service.
 
 ---
 
@@ -367,9 +489,9 @@ REST controllers in Spring are singletons but safe *only* because they're (shoul
 
 ### 4.1 The `synchronized` Keyword
 
-`synchronized` is Java's built-in mutual exclusion mechanism. It ensures that only one thread at a time executes a synchronized block or method.
+`synchronized` is Java's built-in mechanism for mutual exclusion. It ensures that at most one thread executes a given block of code at a time. All other threads that try to enter the block are suspended in the `BLOCKED` state until the current thread exits the block.
 
-Every Java object has an associated **intrinsic lock** (also called a **monitor lock**). `synchronized` acquires this lock before entering the block and releases it when exiting (even if an exception is thrown).
+The mechanism relies on **intrinsic locks** (also called **monitor locks**). Every Java object, without exception, has exactly one intrinsic lock associated with it. `synchronized` acquires this lock on entry and releases it on exit — even if an exception is thrown (the lock is released in a `finally`-like manner).
 
 ### 4.2 Synchronized Methods
 
@@ -377,7 +499,6 @@ Every Java object has an associated **intrinsic lock** (also called a **monitor 
 public class SafeCounter {
     private int count = 0;
 
-    // Acquires the lock on 'this' object before executing
     public synchronized void increment() {
         count++;
     }
@@ -388,80 +509,117 @@ public class SafeCounter {
 }
 ```
 
-**What happens internally:**
-1. Thread A calls `increment()` → tries to acquire lock on `this`
-2. Thread A acquires lock → executes `count++`
-3. Thread B calls `increment()` → tries to acquire lock on `this` → BLOCKED
-4. Thread A finishes → releases lock
-5. Thread B acquires lock → executes `count++`
+Marking a method `synchronized` acquires the lock on `this` — the instance the method is called on. The `synchronized` keyword on a method is syntactic sugar for:
 
-**Synchronized method is equivalent to:**
 ```java
 public void increment() {
-    synchronized(this) { // acquire lock on 'this'
+    synchronized (this) {
         count++;
-    } // release lock on 'this'
+    }
 }
 ```
 
-For `static synchronized` methods, the lock is on the **Class object**, not the instance:
+For `static synchronized` methods, the lock is the **Class object** (`SafeCounter.class`), not any instance. Static and instance synchronized methods have *different* locks and do not mutually exclude each other.
+
 ```java
 public static synchronized void staticIncrement() {
-    // lock is on SafeCounter.class, not on 'this'
+    // lock is on SafeCounter.class
     staticCount++;
 }
 ```
 
-### 4.3 Synchronized Blocks
+### 4.3 Synchronized Blocks — Minimizing Critical Sections
 
-Synchronized blocks give finer-grained control — you choose the lock object and minimize the critical section size.
+Synchronizing an entire method is often too coarse. If a method does expensive computation that doesn't need the lock, synchronizing the whole method forces other threads to wait unnecessarily.
 
 ```java
-public class OrderService {
-    private final Object orderLock = new Object(); // dedicated lock object
-    private final Object inventoryLock = new Object();
-    private int orderCount = 0;
-    private int inventoryCount = 100;
+// BAD — unnecessarily holds lock during I/O and computation
+public synchronized void processOrder(Order order) {
+    validate(order);              // pure computation, no shared state
+    double price = calculate(order); // pure computation, no shared state
+    orders.add(order);            // this line needs the lock
+    sendConfirmationEmail(order); // I/O — slow! while holding lock
+}
 
-    public void placeOrder(int quantity) {
-        // Lock only what needs protection — minimize contention
-        synchronized(orderLock) {
-            orderCount++;
-        }
+// GOOD — hold the lock only during the minimum necessary section
+public void processOrder(Order order) {
+    validate(order);
+    double price = calculate(order);
 
-        synchronized(inventoryLock) {
-            inventoryCount -= quantity;
-        }
-    }
+    synchronized (orderLock) {    // lock only this critical section
+        orders.add(order);
+    }                             // lock released here, before the email is sent
+
+    sendConfirmationEmail(order); // email sent without holding lock
 }
 ```
+
+The second version allows other threads to enter `processOrder` and acquire the lock for their `orders.add()` call while this thread is sending the email. More concurrency, less contention.
 
 **Why use a dedicated lock object instead of `this`?**
-- Anyone with a reference to your object can also synchronize on it and accidentally contend with your internal locks.
-- A private `final Object lock` is not accessible outside the class.
 
-### 4.4 Intrinsic Locks and Reentrancy
-
-Java's intrinsic locks are **reentrant** — a thread that holds a lock can acquire it again without deadlocking itself.
+Using `this` as the lock object exposes your lock to external code. Anyone with a reference to your object can `synchronized(yourObject)` and compete with your internal critical sections:
 
 ```java
-public class ReentrantExample {
-    public synchronized void methodA() {
-        System.out.println("In A");
-        methodB(); // Thread already holds 'this' lock — reentrant, no deadlock
-    }
+// EXPOSED LOCK — any caller can do synchronized(counter) and cause problems
+public class BadCounter {
+    private int count = 0;
+    public synchronized void increment() { count++; }
+}
 
-    public synchronized void methodB() {
-        System.out.println("In B");
+// External code inadvertently (or maliciously) contends with your lock:
+BadCounter c = new BadCounter();
+synchronized (c) {         // holds the same lock as increment()!
+    Thread.sleep(10000);   // blocks increment() for 10 seconds
+}
+```
+
+Using a `private final Object lock` prevents this:
+
+```java
+public class BetterCounter {
+    private final Object lock = new Object();
+    private int count = 0;
+
+    public void increment() {
+        synchronized (lock) { // lock is private — nobody outside can acquire it
+            count++;
+        }
     }
 }
 ```
 
-The JVM tracks a lock count per thread. Each acquisition increments it, each release decrements it. The lock is released only when the count reaches 0.
+### 4.4 Reentrancy
 
-### 4.5 The wait/notify Protocol
+Java's intrinsic locks are **reentrant**: a thread that already holds a lock can acquire it again without deadlocking. The JVM tracks a hold count per thread per lock. Each acquisition increments the count; each release decrements it. The lock is actually released only when the count drops to zero.
 
-Synchronized blocks integrate with Java's condition mechanism via `wait()`, `notify()`, and `notifyAll()`:
+```java
+public class Account {
+    private double balance;
+    private final Object lock = new Object();
+
+    public synchronized void deposit(double amount) {
+        // acquires lock on 'this', count = 1
+        balance += amount;
+        logTransaction("deposit", amount); // calls another synchronized method
+    }
+
+    public synchronized void logTransaction(String type, double amount) {
+        // tries to acquire lock on 'this' — but THIS THREAD already holds it!
+        // reentrant: count becomes 2, no deadlock
+        System.out.printf("%s: %.2f, balance: %.2f%n", type, amount, balance);
+    } // count drops back to 1
+    // deposit() exits: count drops to 0, lock released
+}
+```
+
+Without reentrancy, `deposit()` calling `logTransaction()` would deadlock: the thread would be waiting to acquire a lock it already holds.
+
+### 4.5 The `wait` / `notify` Protocol
+
+Sometimes a thread needs to wait for a *condition* to become true, not just for a lock to become available. For example, a consumer thread needs to wait until the buffer is non-empty. Busy-waiting (spinning in a loop checking the condition) wastes CPU. Java's `wait()` / `notify()` mechanism solves this.
+
+`wait()`, `notify()`, and `notifyAll()` are methods on `Object` and must be called while holding the lock on that object.
 
 ```java
 public class BoundedBuffer<T> {
@@ -472,65 +630,93 @@ public class BoundedBuffer<T> {
         this.maxSize = maxSize;
     }
 
+    // Called by producer threads
     public synchronized void put(T item) throws InterruptedException {
-        while (buffer.size() == maxSize) { // use WHILE, not if — guard against spurious wakeups
-            wait(); // releases lock and suspends this thread
+        while (buffer.size() == maxSize) {
+            // Buffer is full. Atomically release lock and suspend this thread.
+            // When woken, reacquire lock before continuing.
+            wait();
         }
         buffer.add(item);
-        notifyAll(); // wake up threads waiting to consume
+        notifyAll(); // wake up any consumer threads waiting for items
     }
 
+    // Called by consumer threads
     public synchronized T take() throws InterruptedException {
         while (buffer.isEmpty()) {
-            wait(); // releases lock and suspends this thread
+            wait(); // buffer is empty — wait for a producer to add something
         }
         T item = buffer.poll();
-        notifyAll(); // wake up threads waiting to produce
+        notifyAll(); // wake up any producer threads waiting for space
         return item;
     }
 }
 ```
 
-**Rules for wait/notify:**
-- Must be called from within a `synchronized` block on the same object
-- `wait()` atomically releases the lock and suspends the thread
-- When woken by `notify()`, the thread reacquires the lock before returning from `wait()`
-- Always use `while` loop, not `if`, to recheck the condition (spurious wakeups exist)
-- Prefer `notifyAll()` over `notify()` to avoid missed signals
+**Key points about `wait()` / `notify()`:**
 
-### 4.6 Performance Impact of Synchronization
+`wait()` does two things atomically: it releases the lock *and* suspends the thread. "Atomically" is critical here — if release and suspend were separate, a producer could `notifyAll()` between the consumer releasing the lock and the consumer going to sleep. The consumer would miss the notification and sleep forever.
 
-Synchronization has costs:
-1. **Lock acquisition:** check, CAS, possible kernel call if contested
-2. **Memory barriers:** flushes CPU cache, forces reads from main memory
-3. **Contention:** threads blocking each other, context switches
-4. **Lock convoy:** high contention causes threads to queue up
+When a thread is woken by `notify()` or `notifyAll()`, it does not immediately run. It enters the `BLOCKED` state, waiting to reacquire the lock. Only after reacquiring the lock does it return from `wait()`.
+
+**Always use `while`, not `if`, around `wait()`:**
 
 ```java
-// BAD — coarse-grained lock on entire method unnecessarily
-public synchronized void processOrder(Order order) {
-    validate(order);           // pure computation, needs no lock
-    double price = calculate(order); // pure computation, needs no lock
-    synchronized(this) {       // only this part needs the lock
-        orders.add(order);
+// WRONG
+if (buffer.isEmpty()) {
+    wait();
+}
+// If spuriously woken or condition changed before lock reacquired, buffer could be empty again
+T item = buffer.poll(); // NullPointerException or incorrect behavior
+
+// CORRECT
+while (buffer.isEmpty()) {
+    wait(); // re-checks condition every time it wakes up
+}
+T item = buffer.poll(); // guaranteed non-empty here
+```
+
+The JVM specification allows **spurious wakeups** — a thread may return from `wait()` without being notified. The `while` loop revalidates the condition and goes back to sleep if it's not yet true.
+
+**`notify()` vs `notifyAll()`:**
+
+`notify()` wakes exactly one waiting thread (chosen arbitrarily). `notifyAll()` wakes all of them. Use `notifyAll()` when different threads wait for different conditions on the same lock. With `notify()`, you might wake a thread that cannot make progress (its condition is still false), and a thread that could make progress stays asleep.
+
+### 4.6 Liveness Hazards
+
+Synchronization can cause new problems when used incorrectly:
+
+**Deadlock** occurs when two or more threads are each waiting for a lock held by another:
+
+```java
+// Thread A: holds lockA, waiting for lockB
+// Thread B: holds lockB, waiting for lockA
+// Both wait forever
+
+Object lockA = new Object();
+Object lockB = new Object();
+
+// Thread 1
+synchronized (lockA) {
+    Thread.sleep(100); // gives Thread 2 time to acquire lockB
+    synchronized (lockB) { // WAITS — Thread 2 holds lockB
+        // ...
     }
-    sendEmail(order);          // I/O, needs no lock
 }
 
-// GOOD — lock only the minimum critical section
-public void processOrder(Order order) {
-    validate(order);
-    double price = calculate(order);
-    synchronized(orderLock) {
-        orders.add(order);
+// Thread 2
+synchronized (lockB) {
+    synchronized (lockA) { // WAITS — Thread 1 holds lockA
+        // ...
     }
-    sendEmail(order);
 }
 ```
 
-**Lock contention causes:**
-- Thread A holds lock, Thread B waits → context switch (expensive)
-- More threads competing → more context switches → **throughput decreases**
+**Prevention:** always acquire multiple locks in the same global order. If Thread 1 and Thread 2 both always acquire `lockA` before `lockB`, deadlock cannot occur.
+
+**Livelock** is a dynamic version: threads keep responding to each other and changing state but make no actual progress (like two people in a hallway who keep stepping aside in the same direction).
+
+**Starvation** occurs when a thread is ready to run but is perpetually passed over by the scheduler in favor of higher-priority threads. It makes progress eventually, just very slowly. Unfair locks can cause this.
 
 ---
 
@@ -538,168 +724,202 @@ public void processOrder(Order order) {
 
 ### 5.1 The Memory Visibility Problem
 
-Modern CPUs have multiple cache levels (L1, L2, L3). Each CPU core has its own L1/L2 cache. When Thread A writes a variable on Core 0, the write goes to Core 0's cache. Thread B on Core 1 may still read the **stale value** from its own cache.
+To understand `volatile`, you need to understand how modern CPUs handle memory. CPUs don't read directly from RAM — RAM is too slow (hundreds of nanoseconds). Instead, CPUs have multi-level caches: L1 (~1ns), L2 (~5ns), L3 (~20ns), and only then RAM (~100ns).
+
+Each CPU core has its own L1 and L2 cache. When a core writes a value, it writes to its L1 cache first. That write may not reach main memory for some time. Meanwhile, another core reads the same memory address from its own L1 cache — and finds the **old, stale value**.
 
 ```
-Core 0                    Core 1
-┌──────────────┐          ┌──────────────┐
-│  L1 Cache    │          │  L1 Cache    │
-│  flag = true │          │  flag = false│  ← stale!
-└──────┬───────┘          └──────┬───────┘
-       │                         │
-       └────────────┬────────────┘
-               Main Memory
-               flag = true   ← Core 1 hasn't seen this yet
+Core 0                          Core 1
+┌─────────────────┐             ┌─────────────────┐
+│  L1 Cache       │             │  L1 Cache       │
+│  flag = true    │             │  flag = false ← stale value
+└────────┬────────┘             └────────┬────────┘
+         │                               │
+         └───────────────┬───────────────┘
+                    Main Memory
+                    flag = ???   (Core 0's write may not be here yet)
 ```
 
-This is the **memory visibility problem**: a write by one thread is not guaranteed to be visible to other threads without synchronization.
+This is the **memory visibility problem**: Thread A's write is not guaranteed to be visible to Thread B without explicit synchronization.
 
 ### 5.2 Instruction Reordering
 
-Both the JVM (JIT compiler) and CPU can **reorder instructions** for performance, as long as the reordering is invisible to a *single-threaded* program. In multithreaded programs, this breaks assumptions.
+The problem goes deeper than caching. The JIT compiler and the CPU are allowed to **reorder instructions** for performance, as long as the reordering is invisible to the *current thread*. In single-threaded code, if A doesn't depend on B, swapping their order is safe. In multithreaded code, another thread observing partial results of these reorderings sees inconsistency.
 
 ```java
-// NOT volatile — the compiler/CPU may reorder these writes
-class InitializationRace {
-    private boolean initialized = false;
+class Publisher {
+    private boolean ready = false;
     private int value = 0;
 
-    public void init() {
+    public void publish() {
         value = 42;          // write 1
-        initialized = true;  // write 2 — CPU may reorder this BEFORE write 1!
+        ready = true;        // write 2
+        // The CPU/JIT may execute write 2 BEFORE write 1 (they're independent)
     }
 
-    public void use() {
-        if (initialized) {   // sees initialized = true
-            use(value);      // but value might still be 0!
+    public void consume() {
+        if (ready) {          // sees ready = true
+            System.out.println(value); // might print 0! value=42 write hasn't happened yet
         }
     }
 }
 ```
 
-### 5.3 The `volatile` Keyword
+From a single-threaded view, reordering `value = 42` and `ready = true` is harmless — the method produces the same result. But from another thread observing the writes, `ready` can appear `true` while `value` is still `0`. The publication is broken.
 
-Declaring a field `volatile` provides two guarantees:
-1. **Visibility:** A write to a volatile variable is immediately visible to all threads
-2. **Ordering:** Writes to volatile establish a happens-before relationship; prevents reordering across the volatile access
+### 5.3 What `volatile` Guarantees
+
+Declaring a field `volatile` provides two guarantees from the **Java Memory Model (JMM)**:
+
+**Guarantee 1 — Visibility:** Every write to a `volatile` field is immediately written through to main memory. Every read of a `volatile` field reads from main memory, bypassing the CPU cache. This ensures all threads see the most recent value.
+
+**Guarantee 2 — Ordering (happens-before):** All writes that happen *before* a volatile write are flushed and ordered before it. All reads that happen *after* a volatile read see everything up to and including that volatile write. In effect, a volatile write acts as a **full memory barrier** (store fence + load fence).
 
 ```java
-class CorrectInitialization {
-    private volatile boolean initialized = false;
+class Publisher {
+    private volatile boolean ready = false; // volatile!
     private int value = 0;
 
-    public void init() {
-        value = 42;          // guaranteed to happen BEFORE volatile write
-        initialized = true;  // volatile write — acts as a memory barrier
+    public void publish() {
+        value = 42;          // guaranteed to happen BEFORE the volatile write
+        ready = true;        // volatile write — memory barrier here
+                             // all preceding writes are flushed to main memory
     }
 
-    public void use() {
-        if (initialized) {   // volatile read — establishes happens-before
-            use(value);      // guaranteed to see value = 42
+    public void consume() {
+        if (ready) {         // volatile read — memory barrier here
+                             // sees all writes that preceded the volatile write
+            System.out.println(value); // guaranteed to print 42
         }
     }
 }
 ```
 
-### 5.4 Classic Volatile Use Case: Stop Flag
+The volatile write to `ready` acts as a fence: the CPU and JIT cannot move the `value = 42` write to after it. And the volatile read of `ready` acts as a fence: the CPU cannot read `value` from cache — it must see the latest value that was flushed by the writer.
+
+### 5.4 The Stop-Flag Pattern
+
+The most common correct use of `volatile` is a stop flag for background threads:
 
 ```java
 public class BackgroundWorker implements Runnable {
-    private volatile boolean running = true; // must be volatile!
+    private volatile boolean running = true;
 
     public void stop() {
-        running = false; // write on caller's thread
+        running = false; // volatile write — immediately visible to worker thread
     }
 
     @Override
     public void run() {
-        while (running) { // read on worker thread — must see the write immediately
+        while (running) {  // volatile read — sees the write as soon as it happens
             doWork();
         }
-        System.out.println("Worker stopped");
+        System.out.println("Worker stopped cleanly");
     }
 }
 
-// Usage
 BackgroundWorker worker = new BackgroundWorker();
-Thread t = new Thread(worker);
+Thread t = new Thread(worker, "background-worker");
 t.start();
 
-Thread.sleep(5000); // let it run for 5 seconds
-worker.stop(); // signals the worker to stop
+Thread.sleep(5000);
+worker.stop(); // signal the worker to stop
+t.join();      // wait for the worker to actually finish
 ```
 
-Without `volatile`, the JIT compiler might cache `running` in a register and the worker thread *never* sees the update — running forever.
-
-### 5.5 When Volatile Is NOT Enough
-
-Volatile guarantees visibility but **not atomicity**. It does not protect compound actions (read-modify-write).
+Without `volatile`, the JIT compiler sees that `running` is never written in the `run()` loop, concludes it is a constant, and hoists the read out of the loop:
 
 ```java
-// BROKEN — volatile does NOT fix this race condition
+// What the JIT effectively compiles to (without volatile):
+boolean cached = running; // read once, outside the loop
+while (cached) {          // cached is always true — infinite loop
+    doWork();
+}
+```
+
+`volatile` prevents this optimization by forbidding caching of the value in a register.
+
+### 5.5 When Volatile Is Not Enough
+
+`volatile` guarantees visibility of individual reads and writes. It does **not** guarantee atomicity of compound operations (read-modify-write or check-then-act). This is the most common mistake with `volatile`:
+
+```java
+// BROKEN — volatile does NOT fix the race condition
 public class BrokenCounter {
     private volatile int count = 0;
 
     public void increment() {
-        count++; // still 3 non-atomic operations: read, add, write
-                 // volatile only ensures visibility of each individual read/write
-                 // the sequence of read-then-write is still not atomic
+        count++; // still three non-atomic steps: READ, ADD, WRITE
+                 // volatile ensures each READ and WRITE is visible to other threads
+                 // but the sequence of READ-then-WRITE is still not atomic
+                 // Thread A and Thread B can both READ the same value
     }
 }
 ```
 
-**Volatile is correct when:**
-- Exactly one thread writes the variable (or writes are independent)
-- Other threads only read, or write independently
-- The variable is not part of a compound action (check-then-act, read-modify-write)
+The race condition from Section 3.2 still applies. `volatile` makes sure every thread sees the latest written value, but two threads can still read the same value, both add 1, and both write the same result.
 
-**Volatile is NOT enough when:**
-- Multiple threads write the same variable based on its current value (`count++`)
-- You need atomicity of multiple variables together (balance transfer)
+**When volatile is the right tool:**
+- Exactly one thread writes the variable, others only read
+- The write is a single assignment, not computed from the current value
+- Example: status flags, shutdown signals, configuration values updated by admin
 
-### 5.6 Happens-Before Relationship
+**When volatile is NOT enough:**
+- Multiple threads write the same variable (`count++`, `balance -= amount`)
+- The new value depends on the current value (read-modify-write)
+- Atomicity of multiple variables together is required
+- For these cases, use `synchronized`, `AtomicInteger`, `AtomicReference`, or `java.util.concurrent.locks`
 
-The Java Memory Model (JMM) defines **happens-before** as the guarantee that one action's effects are visible to another action. Key happens-before rules:
+### 5.6 The Java Memory Model and Happens-Before
 
-| Rule | Description |
+The **Java Memory Model (JMM)** formally defines when one thread's writes are guaranteed to be visible to another thread's reads. The answer is: when there is a **happens-before relationship** between the write and the read.
+
+Happens-before is not about time — it is about *guarantees*. If action A happens-before action B, the JMM guarantees B can see all effects of A.
+
+Built-in happens-before rules:
+
+| Rule | What it means |
 |---|---|
-| Program order | Each action in a thread happens-before later actions in that thread |
-| Monitor lock | `unlock()` of a lock happens-before any subsequent `lock()` of that lock |
-| Volatile write | A volatile write happens-before any subsequent volatile read of that field |
-| Thread start | `Thread.start()` happens-before any action in the started thread |
-| Thread join | All actions in a thread happen-before `Thread.join()` returns |
-| Transitivity | If A hb B and B hb C, then A hb C |
+| **Program Order** | Each statement in a thread happens-before the next statement in that same thread |
+| **Monitor Unlock** | `unlock` of a lock happens-before any subsequent `lock` of the same lock |
+| **Volatile Write** | A write to a volatile field happens-before any subsequent read of that field |
+| **Thread Start** | `thread.start()` happens-before any action in the started thread |
+| **Thread Join** | All actions in thread T happen-before `T.join()` returns in the joining thread |
+| **Transitivity** | If A hb B and B hb C, then A hb C |
+
+Without a happens-before relationship, there is no guarantee. A write in Thread A and a read in Thread B without any synchronization between them have no happens-before — the read might see any value.
+
+**Volatile piggyback** exploits transitivity to make non-volatile variables visible:
 
 ```java
 int x = 0;
 volatile boolean flag = false;
 
 // Thread A
-x = 1;          // write to x (non-volatile)
-flag = true;    // volatile write — creates happens-before edge
+x = 1;          // (1) write x — happens-before (2) by program order
+flag = true;    // (2) volatile write — happens-before (3) by volatile rule
 
 // Thread B
-if (flag) {     // volatile read — sees the happens-before from Thread A's volatile write
-    // x = 1 is GUARANTEED here because:
-    // - write to x hb volatile write to flag (program order)
-    // - volatile write to flag hb volatile read of flag
-    // - by transitivity: write to x hb this point in Thread B
-    System.out.println(x); // guaranteed to print 1
+if (flag) {     // (3) volatile read of flag
+    // By transitivity: (1) hb (2) hb (3)
+    // So (1) hb (3) — Thread B is guaranteed to see x = 1
+    System.out.println(x); // always prints 1
 }
 ```
 
-This is the **volatile piggyback** technique: by making `flag` volatile, we pull along the visibility of `x` even though `x` itself is not volatile.
+By writing `flag` volatile, we pull along the visibility of `x`. This technique works only because the write to `x` *precedes* the volatile write to `flag` in Thread A, and the read of `x` *follows* the volatile read of `flag` in Thread B.
 
 ---
 
 ## Summary: Part 1
 
-| Topic | Key Takeaway |
-|---|---|
-| Concurrency vs Parallelism | Concurrency = overlapping progress; Parallelism = simultaneous execution |
-| Thread creation | Prefer `Runnable`/`Callable`; always name your threads |
-| Thread safety | Eliminate: shared state, mutable state, or unsynchronized access |
-| Synchronized | Uses intrinsic locks; reentrant; minimize critical section size |
-| Volatile | Visibility + ordering, NOT atomicity; one writer, multiple readers |
+| Topic | Core Concept | Key Takeaway |
+|---|---|---|
+| Concurrency | Overlapping task progress | Not the same as parallelism; parallelism requires multiple cores |
+| Threads | Unit of execution in a process | Share heap, isolated stack; name your threads; understand BLOCKED vs WAITING |
+| Thread Safety | Correct behavior under all schedulings | Eliminate: sharing, mutability, or unsynchronized access |
+| Race Conditions | Correctness depends on scheduling | Read-modify-write and check-then-act are the two common forms |
+| Synchronized | Intrinsic lock; mutual exclusion | Reentrant; minimize critical section; use private lock objects; always `while` with `wait()` |
+| Volatile | Visibility + ordering, not atomicity | One writer pattern; stop flags; understand happens-before before using |
 
-**Continue reading:** [Part 2 — JMM, Atomic Variables, Locks, Thread Pools, CompletableFuture](./02-advanced-concurrency.md)
+**Continue reading:** [Part 2 — Atomic Variables, Locks, Thread Pools, CompletableFuture](./02-advanced-concurrency.md)

@@ -38,16 +38,10 @@ public class ParkingSystemDemo {
         // Test Case 1: Park different types of vehicles
         System.out.println("--- Test Case 1: Parking Vehicles ---");
         Vehicle car1 = new Car("ABC-123");
-        Vehicle car2 = new Car("XYZ-789");
         Vehicle motorcycle1 = new Bike("BIKE-001");
-        Vehicle truck1 = new Truck("TRUCK-555");
-        Vehicle electricCar1 = new Bike("TESLA-001");
 
         ParkingTicket ticket1 = parkingLot.parkVehicle(car1);
-        ParkingTicket ticket2 = parkingLot.parkVehicle(car2);
         ParkingTicket ticket3 = parkingLot.parkVehicle(motorcycle1);
-        ParkingTicket ticket4 = parkingLot.parkVehicle(truck1);
-        ParkingTicket ticket5 = parkingLot.parkVehicle(electricCar1);
 
         System.out.println();
         parkingLot.displayAvailability();
@@ -72,11 +66,6 @@ public class ParkingSystemDemo {
 
         System.out.println();
         parkingLot.displayAvailability();
-
-        // Test Case 3: Try to park when spot becomes available
-        System.out.println("--- Test Case 3: Parking After Spot Freed ---");
-        Vehicle car3 = new Car("NEW-999");
-        ParkingTicket ticket6 = parkingLot.parkVehicle(car3);
 
         System.out.println();
         parkingLot.displayAvailability();

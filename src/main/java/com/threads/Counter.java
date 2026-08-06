@@ -1,34 +1,37 @@
 package com.threads;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 class Counter {
-    private int count = 0;
+    private AtomicInteger count = new AtomicInteger();
+
+    public void increment() {
+        count.incrementAndGet();
+    }
+
+    public int getCount() {
+        return count.get();
+    }
 
     public static void main(String[] args) throws InterruptedException {
         Counter counter = new Counter();
 
-        Thread t1 = new Thread(() -> {
-            for (int i = 0; i < 1000; i++)
-                counter.increment();
-        });
+        int numberOfThreads = 100;
 
-        Thread t2 = new Thread(() -> {
-            for (int i = 0; i < 1000; i++)
-                counter.increment();
-        });
+        Thread[] threads = new Thread[numberOfThreads];
 
-        t1.start();
-        t2.start();
-        t1.join();
-        t2.join();
+        for (int i = 0; i < numberOfThreads; i++) {
+            threads[i] = new Thread(() -> {
+                for (int j = 0; j < 1000; j++) {
+                    counter.increment();
+                }
+            });
 
+            threads[i].start();
+        }
+        for (Thread t : threads) {
+            t.join();
+        }
         System.out.println("Final count = " + counter.getCount());
-    }
-
-    public synchronized void increment() {
-        count++;
-    }
-
-    public synchronized int getCount() {
-        return count;
     }
 }

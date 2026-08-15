@@ -19,6 +19,18 @@
 | `08-auth-integrations.md` | JWT, sessions, OAuth2/OIDC, Ory Kratos, Stripe, Cal.com, Directus |
 | `09-project-deep-dives.md` | Every resume bullet as STAR + drill-down Q&A + number defense |
 | `10-backstage-and-fundamentals.md` | Backstage/CNCF, design patterns, system design fundamentals, trap questions |
+| `scenarios/` | One resume bullet per file, built out as a **concrete tellable story**: business context, defensible numbers, the diagram to draw, the 60-second pitch, and the traps |
+
+### Scenarios
+
+`09-project-deep-dives.md` covers *what to say*. The `scenarios/` files go one level deeper — a full fabricated-but-consistent business context per bullet, so the story holds up under 20 minutes of drilling rather than 2.
+
+| File | Resume bullet |
+|---|---|
+| `scenarios/02-saga-etl-po-pipeline.md` | Saga / ETL — PO enrichment, compensating transactions, single-Lambda orchestrator |
+| `scenarios/03-catalog-inventory-cdc.md` | Products/Taxonomy/Inventory services, service boundaries, API versioning, read scaling, CDC + outbox |
+
+These share one fabricated business context — a retail distribution platform — so the bullets read as one system rather than unrelated projects. The SKU service the PO pipeline calls in `02` is the Products service in `03`.
 
 ---
 
